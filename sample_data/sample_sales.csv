@@ -1,0 +1,16 @@
+date,region,product,category,units,unit_price,revenue,customer_type,returned
+2026-01-02,North,Notebook,Stationery,10,5.5,55,New,false
+2026-01-03,South,Pen,Stationery,25,1.2,30,Returning,false
+2026-01-04,East,Desk,Furniture,2,120,240,New,false
+2026-01-05,West,Chair,Furniture,4,75,300,Returning,true
+2026-01-06,North,Monitor,Electronics,3,210,630,New,false
+2026-01-07,South,Keyboard,Electronics,5,45,225,Returning,false
+2026-01-08,East,Mouse,Electronics,12,18,216,New,false
+2026-01-09,West,Notebook,Stationery,8,5.5,44,Returning,false
+2026-01-10,North,Pen,Stationery,40,1.2,48,New,false
+2026-01-11,South,Desk,Furniture,1,120,120,Returning,false
+2026-01-12,East,Chair,Furniture,2,75,150,New,true
+2026-01-13,West,Monitor,Electronics,2,210,420,Returning,false
+2026-01-14,North,Keyboard,Electronics,6,45,270,New,false
+2026-01-15,South,Mouse,Electronics,10,18,180,Returning,false
+2026-01-16,East,Notebook,Stationery,15,5.5,82.5,New,false

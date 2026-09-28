@@ -1,0 +1,23 @@
+{
+  "name": "js-data-analysis-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "csv-parse": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "multer": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "supertest": "latest",
+    "vitest": "latest"
+  }
+}
