@@ -1,6 +1,6 @@
 # JavaScript data-analysis agent V1
 
-This is a new Node.js implementation. It does not modify or migrate the existing Python project.
+
 
 ## Architecture
 
