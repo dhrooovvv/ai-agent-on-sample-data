@@ -9,7 +9,7 @@ export class AppError extends Error {
 
 export function errorHandler(error, _request, response, _next) {
   const statusCode = error.statusCode ?? 500;
-  const body = { error: statusCode === 500 ? 'Internal server error' : error.message };
+  const body = { error: error instanceof AppError ? error.message : 'Internal server error' };
   if (error.details) body.details = error.details;
   response.status(statusCode).json(body);
 }

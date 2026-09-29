@@ -4,7 +4,7 @@ This is a new Node.js implementation. It does not modify or migrate the existing
 
 ## Architecture
 
-`server.js` exposes `/health` and `/analyze`. The analyze route parses an uploaded CSV in memory, validates the request, and passes records plus the question to `agentService`. The agent service uses Gemini function calling; `toolRegistry.js` exposes only approved tools and executes their JavaScript implementations. The tool result is then returned to Gemini for the final natural-language answer.
+`server.js` exposes `/health` and `/analyze`. The analyze route parses an uploaded CSV in memory, validates the request, and passes records plus the question to `agentService`. `agentService` sends only the user request and dataset metadata to JEV System One for a typed tool choice. `toolRegistry.js` validates that choice, resolves deterministic parameters, and dispatches only to approved JavaScript tools.
 
 The tool registry is the extension point for future analysis tools. Each tool owns its declaration and execution function, so adding a tool later means adding its module and registering it in the registry without changing the agent loop.
 
@@ -16,7 +16,7 @@ The tool registry is the extension point for future analysis tools. Each tool ow
 
 The other active tools are `filter_data` for validated AND-combined row conditions, `group_by_analysis` for deterministic grouped aggregations, `correlation_analysis` for Pearson correlation, and `time_series_analysis` for daily or monthly date-bucket aggregations. Invalid values are handled by the tools, and no tool executes generated code.
 
-JavaScript performs the calculations because the dataset stays in the application and deterministic code is safer and more reproducible than executing generated code. Gemini selects the approved function and explains its returned result; it never executes arbitrary code.
+JavaScript performs the calculations because the dataset stays in the application and deterministic code is safer and more reproducible than executing generated code. JEV selects a tool only; it never receives the full dataset and never calculates the result. Gemini is disabled in the current request flow and its previous integration is retained as commented code in `agentService.js`.
 
 ## Setup
 
@@ -25,7 +25,7 @@ npm install
 cp .env.example .env
 ```
 
-Set `GEMINI_API_KEY` in `.env`. `GEMINI_MODEL` defaults to `gemini-3.7-flash`. The API key is read only by the SDK and is never printed by the application.
+Set `TYPESAFE_API_KEY` in `.env`. `TYPESAFE_BASE_URL` defaults to `https://api.codiv.ai` and `TYPESAFE_MODEL` defaults to `openjev-latest`, the current Codiv System One model alias. The key is read only for the Authorization header and is never printed by the application. Gemini variables remain for the disabled integration.
 
 ## Run
 
@@ -57,4 +57,4 @@ The response has the shape `{ success, question, answer, result, tools_used }`. 
 npm test
 ```
 
-Tests cover dynamic summary calculations, aggregate operations and validation, the 15-row/9-column sample, natural-language aggregate tool selection, and the multipart API contract. The API tests inject a small fake Gemini boundary so they do not require a live Gemini key; Gemini integration is isolated in `agentService.js`.
+Tests cover dynamic summary calculations, aggregate operations and validation, JEV request/decision validation, the 15-row/9-column sample, natural-language tool selection, and the multipart API contract. Provider tests inject a fetch boundary so they do not require a live Codiv key.

@@ -54,22 +54,20 @@ describe('POST /analyze', () => {
   });
 
   it('selects aggregate_data for a natural-language numeric question', async () => {
-    let callNumber = 0;
-    const client = {
-      models: {
-        async generateContent() {
-          callNumber += 1;
-          if (callNumber === 1) {
-            return { candidates: [{ content: { parts: [{ functionCall: {
-              name: 'aggregate_data', args: { operation: 'average', column: 'revenue' },
-            } }] } }] };
-          }
-          return { candidates: [{ content: { parts: [{ text: 'The average has been calculated.' }] } }] };
-        },
+    const jevService = {
+      async chooseTool({ userRequest, dataset, availableTools }) {
+        expect(userRequest).toBe('What is the average revenue?');
+        expect(dataset.rows).toBe(15);
+        expect(dataset.columns).toContainEqual({ name: 'revenue', type: 'number' });
+        expect(availableTools.map(({ name }) => name)).toEqual([
+          'datasetSummary', 'filterData', 'aggregateData', 'correlationAnalysis',
+          'regressionAnalysis', 'timeSeriesAnalysis', 'review',
+        ]);
+        return { tool: 'aggregateData' };
       },
     };
     const csv = await readFile(samplePath);
-    const response = await request(createApp({ agentService: createAgentService({ client }) }))
+    const response = await request(createApp({ agentService: createAgentService({ jevService }) }))
       .post('/analyze')
       .field('question', 'What is the average revenue?')
       .attach('file', csv, 'sample_sales.csv');
@@ -83,58 +81,31 @@ describe('POST /analyze', () => {
     expect(response.body.tools_used).toEqual(['aggregate_data']);
   });
 
-  async function requestWithTool(question, functionCall) {
-    let callNumber = 0;
-    const client = {
-      models: {
-        async generateContent() {
-          callNumber += 1;
-          return callNumber === 1
-            ? { candidates: [{ content: { parts: [{ functionCall }] } }] }
-            : { candidates: [{ content: { parts: [{ text: 'The requested analysis is complete.' }] } }] };
-        },
-      },
-    };
+  async function requestWithTool(question, selectedTool) {
+    const jevService = { async chooseTool() { return { tool: selectedTool }; } };
     const csv = await readFile(samplePath);
-    return request(createApp({ agentService: createAgentService({ client }) }))
+    return request(createApp({ agentService: createAgentService({ jevService }) }))
       .post('/analyze')
       .field('question', question)
       .attach('file', csv, 'sample_sales.csv');
   }
 
   it('selects filter_data for a natural-language filter question', async () => {
-    const response = await requestWithTool('Which sales had revenue over 500?', {
-      name: 'filter_data', args: { conditions: [{ column: 'revenue', operator: '>', value: 500 }] },
-    });
+    const response = await requestWithTool('Which sales had revenue over 500?', 'filterData');
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data']);
     expect(response.body.result.matched_rows).toBe(1);
   });
 
-  it('selects group_by_analysis for a natural-language grouped question', async () => {
-    const response = await requestWithTool('What is average revenue by region?', {
-      name: 'group_by_analysis', args: { group_by: 'region', operation: 'average', column: 'revenue' },
-    });
-    expect(response.status).toBe(200);
-    expect(response.body.tools_used).toEqual(['group_by_analysis']);
-    expect(response.body.result.groups).toHaveLength(4);
-  });
-
   it('selects correlation_analysis for a natural-language correlation question', async () => {
-    const response = await requestWithTool('What is the correlation between units and revenue?', {
-      name: 'correlation_analysis', args: { column_x: 'units', column_y: 'revenue' },
-    });
+    const response = await requestWithTool('What is the correlation between units and revenue?', 'correlationAnalysis');
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['correlation_analysis']);
     expect(response.body.result.valid_pairs).toBe(15);
   });
 
   it('selects time_series_analysis for a natural-language trend question', async () => {
-    const response = await requestWithTool('Show total revenue by month.', {
-      name: 'time_series_analysis', args: {
-        date_column: 'date', value_column: 'revenue', operation: 'sum', granularity: 'month',
-      },
-    });
+    const response = await requestWithTool('Show total revenue by month.', 'timeSeriesAnalysis');
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['time_series_analysis']);
     expect(response.body.result.series).toHaveLength(1);
