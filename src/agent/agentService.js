@@ -1,6 +1,6 @@
 import { createJevService } from '../services/jevService.js';
 import { summarizeDataset } from '../tools/datasetSummary.js';
-import { dispatchToolSelection, getJevToolDescriptions } from './toolRegistry.js';
+import { dispatchToolPlan, getJevToolDescriptions } from './toolRegistry.js';
 
 function toPublicResult(summary) {
   if (!summary) return undefined;
@@ -10,17 +10,36 @@ function toPublicResult(summary) {
   return summary;
 }
 
-function answerFromToolResult(result) {
+function answerFromToolResult(result, question = '') {
   if (!result) return 'No analysis result was produced.';
   if (Object.prototype.hasOwnProperty.call(result, 'rowCount')) {
     return `The dataset contains ${result.rowCount} rows and ${result.columnCount} columns.`;
   }
   if (Object.prototype.hasOwnProperty.call(result, 'operation')) {
     if (result.operation === 'count') return `The dataset contains ${result.value} records.`;
+    if (result.operation === 'max_row' || result.operation === 'min_row') {
+      const row = result.row ?? {};
+      const employeeKey = Object.keys(row).find((key) => /^(employee|name|person)$/i.test(key));
+      const normalizedQuestion = String(question).toLowerCase();
+      const scalarKeys = Object.keys(row).filter((key) => key !== result.column && key !== employeeKey && typeof row[key] !== 'object');
+      const relatedKey = scalarKeys.find((key) => {
+        const alias = key.replace(/_/g, ' ').toLowerCase();
+        return normalizedQuestion.includes(key.toLowerCase()) || normalizedQuestion.includes(alias);
+      }) ?? (/(?:\band\b|\bwhat\b|\breport\b|\btheir\b)/.test(normalizedQuestion) ? scalarKeys.find((key) => Number.isFinite(Number(row[key]))) : undefined);
+      const employee = employeeKey ? `${row[employeeKey]}` : 'The matching row';
+      const direction = result.operation === 'max_row' ? 'highest' : 'lowest';
+      const relatedLabel = relatedKey?.replace(/_/g, ' ');
+      const related = relatedKey ? ` and a ${relatedLabel} of ${row[relatedKey]}` : '';
+      return `${employee} has the ${direction} ${result.column} value of ${result.value}${related}.`;
+    }
     if (result.column) return `The ${result.operation} of ${result.column} is ${result.value}.`;
   }
   if (Object.prototype.hasOwnProperty.call(result, 'matched_rows')) return `The filter matched ${result.matched_rows} of ${result.total_rows} rows.`;
   if (Object.prototype.hasOwnProperty.call(result, 'groups')) return `The grouped analysis returned ${result.groups.length} groups.`;
+  if (result.operation === 'group_max_follow_up' || result.operation === 'group_min_follow_up') {
+    const direction = result.operation === 'group_max_follow_up' ? 'highest' : 'lowest';
+    return `${result.group} has the ${direction} average ${result.primary.column} of ${result.primary.value}, with an average ${result.follow_up.column} of ${result.follow_up.value}.`;
+  }
   if (Object.prototype.hasOwnProperty.call(result, 'correlation')) return result.correlation === null
     ? 'The correlation is undefined because one column has no variance.'
     : `The Pearson correlation is ${result.correlation}.`;
@@ -40,16 +59,18 @@ export function createAgentService({ jevService = createJevService() } = {}) {
   return {
     async analyze({ question, records }) {
       const metadata = datasetMetadata(records);
-      const decision = await jevService.chooseTool({
+      const choosePlan = jevService.choosePlan ?? jevService.chooseTool;
+      const decision = await choosePlan({
         userRequest: question,
         dataset: metadata,
         availableTools: getJevToolDescriptions(),
       });
-      const dispatched = await dispatchToolSelection(decision, { records, question, metadata });
+      const dispatched = await dispatchToolPlan(decision, { records, question, metadata });
       return {
-        answer: answerFromToolResult(dispatched.result),
+        answer: answerFromToolResult(dispatched.result, question),
         result: toPublicResult(dispatched.result),
-        toolsUsed: [dispatched.toolName],
+        toolsUsed: dispatched.toolsUsed,
+        executionTrace: dispatched.executionTrace,
       };
     },
   };

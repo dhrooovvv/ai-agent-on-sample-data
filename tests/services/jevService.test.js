@@ -39,6 +39,29 @@ describe('JEV service', () => {
       .rejects.toThrow('invalid tool decision');
   });
 
+  it('turns ordered Choice answers into a multi-step plan', async () => {
+    let request;
+    const service = createJevService({
+      apiKey: 'test-key',
+      fetchImpl: async (_url, options) => {
+        request = JSON.parse(options.body);
+        return {
+          ok: true,
+          async json() {
+            return { answers: {
+              step_1: { type: 'choice', choice: 'filterData' },
+              step_2: { type: 'choice', choice: 'aggregateData' },
+              step_3: { type: 'choice', choice: 'review' },
+            } };
+          },
+        };
+      },
+    });
+    const plan = await service.choosePlan({ userRequest: 'average salary after filtering', dataset: {}, availableTools });
+    expect(plan).toEqual({ plan: [{ tool: 'filterData' }, { tool: 'aggregateData' }] });
+    expect(Object.keys(request.questions)).toEqual(['step_1', 'step_2', 'step_3', 'step_4', 'step_5', 'step_6', 'step_7', 'step_8']);
+  });
+
   it('reports provider failures without exposing credentials', async () => {
     const service = createJevService({
       apiKey: 'secret-value',

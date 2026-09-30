@@ -40,8 +40,9 @@ function matchesCondition(record, condition) {
   return operator === '=' ? String(actual) === String(value) : String(actual) !== String(value);
 }
 
-export function filterDataset(records, { conditions, condition } = {}) {
+export function filterDataset(records, { conditions, condition, logic = 'and' } = {}) {
   if (!Array.isArray(records)) throw new AppError('dataset records are required', 400);
+  if (!['and', 'or'].includes(String(logic).toLowerCase())) throw new AppError('filter logic must be AND or OR', 400);
   const requested = conditions ?? (condition ? [condition] : []);
   if (!Array.isArray(requested) || requested.length === 0) throw new AppError('at least one filter condition is required', 400);
   for (const item of requested) {
@@ -53,12 +54,14 @@ export function filterDataset(records, { conditions, condition } = {}) {
       throw new AppError('between requires a two-value array', 400);
     }
   }
-  const rows = records.filter((record) => requested.every((item) => matchesCondition(record, item)));
+  const matcher = String(logic).toLowerCase() === 'or' ? 'some' : 'every';
+  const rows = records.filter((record) => requested[matcher]((item) => matchesCondition(record, item)));
   const result = { matched_rows: rows.length, total_rows: records.length, rows };
   if (requested.length === 1) {
-    Object.assign(result, { column: requested[0].column, operator: requested[0].operator, value: requested[0].value });
+    Object.assign(result, { column: requested[0].column, operator: requested[0].operator, value: requested[0].value, logic });
   } else {
     result.conditions = requested;
+    result.logic = logic;
   }
   return result;
 }
@@ -80,9 +83,10 @@ export const filterDataTool = {
             value: { description: 'Comparison value, or two numeric values for between.' },
           }, required: ['column', 'operator', 'value'] },
         },
+        logic: { type: 'STRING', enum: ['and', 'or'], description: 'How multiple conditions are combined; defaults to and.' },
       },
       required: ['conditions'],
     },
   },
-  execute: ({ records, conditions }) => filterDataset(records, { conditions }),
+  execute: ({ records, conditions, logic }) => filterDataset(records, { conditions, logic }),
 };

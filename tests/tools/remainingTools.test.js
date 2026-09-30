@@ -3,6 +3,7 @@ import { filterDataset } from '../../src/tools/filterData.js';
 import { groupDataset } from '../../src/tools/groupByAnalysis.js';
 import { correlateDataset } from '../../src/tools/correlationAnalysis.js';
 import { timeSeriesDataset } from '../../src/tools/timeSeriesAnalysis.js';
+import { inferToolParameters } from '../../src/services/toolParameterService.js';
 
 const employees = [
   { name: 'A', department: 'Engineering', salary: '70000', score: '1' },
@@ -25,6 +26,37 @@ describe('filter_data', () => {
     expect(filterDataset(employees, { condition: { column: 'salary', operator: 'between', value: [60000, 80000] } }).matched_rows).toBe(2);
     expect(() => filterDataset(employees, { condition: { column: 'unknown', operator: '=', value: 'x' } }))
       .toThrow('Column does not exist: unknown');
+  });
+
+  it('supports explicit OR logic without changing the default AND behavior', () => {
+    const result = filterDataset(employees, {
+      logic: 'or',
+      conditions: [
+        { column: 'department', operator: '=', value: 'Engineering' },
+        { column: 'salary', operator: '<', value: 60000 },
+      ],
+    });
+    expect(result.rows.map((row) => row.name)).toEqual(['A', 'B', 'C']);
+    expect(result.logic).toBe('or');
+  });
+
+  it('parses multiple natural-language numeric conditions and variations', () => {
+    const metadata = { columns: [
+      { name: 'age', type: 'number' },
+      { name: 'experience_years', type: 'number' },
+      { name: 'performance_score', type: 'number' },
+    ] };
+    const conditions = inferToolParameters(
+      'filterData',
+      'employees older than 30 with experience greater than 5 and performance score above 80',
+      metadata,
+      [],
+    ).conditions;
+    expect(conditions).toEqual([
+      { column: 'age', operator: '>', value: 30 },
+      { column: 'experience_years', operator: '>', value: 5 },
+      { column: 'performance_score', operator: '>', value: 80 },
+    ]);
   });
 });
 
