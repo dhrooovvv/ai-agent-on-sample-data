@@ -1,4 +1,4 @@
-# JavaScript data-analysis agent V1
+# JavaScript data-analysis agent 
 
 
 
