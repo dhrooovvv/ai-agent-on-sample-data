@@ -60,7 +60,7 @@ describe('POST /analyze', () => {
         expect(dataset.rows).toBe(15);
         expect(dataset.columns).toContainEqual({ name: 'revenue', type: 'number' });
         expect(availableTools.map(({ name }) => name)).toEqual([
-          'datasetSummary', 'filterData', 'aggregateData', 'correlationAnalysis',
+          'datasetSummary', 'filterData', 'aggregateData', 'groupByAnalysis', 'correlationAnalysis',
           'regressionAnalysis', 'timeSeriesAnalysis', 'review',
         ]);
         return { tool: 'aggregateData' };

@@ -10,7 +10,14 @@ function numericValue(value) {
 
 function mentionedColumns(request, columns) {
   return columns
-    .map((column) => ({ ...column, position: request.toLowerCase().indexOf(column.name.toLowerCase()) }))
+    .map((column) => {
+      const aliases = [column.name, column.name.replace(/_/g, ' ')];
+      const positions = aliases.map((alias) => {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'i').exec(request)?.index ?? -1;
+      }).filter((position) => position >= 0);
+      return { ...column, position: positions.length ? Math.min(...positions) : -1 };
+    })
     .filter((column) => column.position >= 0)
     .sort((left, right) => left.position - right.position);
 }
@@ -31,6 +38,28 @@ function operationFromRequest(request, allowed, fallback) {
   return fallback;
 }
 
+function aggregationColumn(request, columns, operation) {
+  const operationWords = {
+    sum: 'total|sum',
+    average: 'average|avg|mean',
+    min: 'minimum|min|lowest',
+    max: 'maximum|max|highest',
+  }[operation];
+  if (operationWords) {
+    const matches = mentionedColumns(request, columns)
+      .map((column) => {
+        const aliases = [column.name, column.name.replace(/_/g, ' ')];
+        return aliases.some((alias) => {
+          const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          return new RegExp(`\\b(?:${operationWords})\\b(?:\\s+of)?\\s+(?:the\\s+)?${escaped}(?![A-Za-z0-9_])`, 'i').test(request);
+        }) ? column : null;
+      })
+      .filter(Boolean);
+    if (matches.length) return matches[0].name;
+  }
+  return firstColumn(request, columns, () => true);
+}
+
 function parseFilterValue(value) {
   const numeric = numericValue(value);
   const cleaned = value.trim().replace(/[?.!,;]+$/, '').replace(/^['"]|['"]$/g, '');
@@ -38,42 +67,80 @@ function parseFilterValue(value) {
   return cleanedNumeric === null ? cleaned : cleanedNumeric;
 }
 
-function filterArguments(request, columns) {
-  const lower = request.toLowerCase();
-  const column = firstColumn(request, columns);
-  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const expression = new RegExp(`${escaped}\\s*(=|!=|>=|<=|>|<)\\s*([^,;]+)`, 'i');
-  const textualExpression = new RegExp(`${escaped}\\s+(?:is|equals?)\\s+([^,;]+)`, 'i');
-  const betweenExpression = new RegExp(`${escaped}\\s+between\\s+([^\\s,;]+)\\s+and\\s+([^,;]+)`, 'i');
-  const aboveBelow = new RegExp(`(?:above|over|greater than|at least|below|under|less than|at most)\\s+([^,;]+)`, 'i');
-  const between = lower.match(betweenExpression);
-  if (between) return { conditions: [{ column, operator: 'between', value: [parseFilterValue(between[1]), parseFilterValue(between[2])] }] };
-  const match = request.match(expression);
-  if (match) return { conditions: [{ column, operator: match[1], value: parseFilterValue(match[2]) }] };
-  const textual = request.match(textualExpression);
-  if (textual) return { conditions: [{ column, operator: '=', value: parseFilterValue(textual[1]) }] };
-  const direction = lower.match(aboveBelow);
-  if (direction) {
-    const operator = /\b(above|over|greater than|at least)\b/.test(lower) ? (lower.includes('at least') ? '>=' : '>') : (lower.includes('at most') ? '<=' : '<');
-    return { conditions: [{ column, operator, value: parseFilterValue(direction[1]) }] };
-  }
-  throw new AppError('Could not determine the filter condition from the request', 422);
+function cleanTextValue(value) {
+  return value.trim().replace(/[?.!,;]+$/, '').replace(/^['"]|['"]$/g, '').trim();
 }
 
-export function inferToolParameters(tool, request, metadata) {
+function conditionForColumn(request, column, records) {
+  const aliases = [column.name, column.name.replace(/_/g, ' ')].map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const columnPattern = `(?:${aliases.join('|')})`;
+  const explicit = new RegExp(`${columnPattern}\\s*(=|!=|>=|<=|>|<)\\s*([^,;]+?)(?=\\s+(?:and|who|with|that|where)\\b|[?,;]|$)`, 'i').exec(request);
+  if (explicit) return { column: column.name, operator: explicit[1], value: parseFilterValue(explicit[2]) };
+  const between = new RegExp(`${columnPattern}\\s+between\\s+([^\\s,;]+)\\s+and\\s+([^,;]+?)(?=\\s+(?:and|who|with|that|where)\\b|[?,;]|$)`, 'i').exec(request);
+  if (between) return { column: column.name, operator: 'between', value: [parseFilterValue(between[1]), parseFilterValue(between[2])] };
+
+  if (column.type === 'number') {
+    const directional = new RegExp(`${columnPattern}\\s+(?:is\\s+)?(?:above|over|greater than|at least|below|under|less than|at most)\\s+(-?(?:\\d+\\.?\\d*|\\.\\d+))`, 'i').exec(request);
+    if (directional) {
+      const phrase = directional[0].toLowerCase();
+      const operator = /at least/.test(phrase) ? '>=' : /at most/.test(phrase) ? '<=' : /below|under|less than/.test(phrase) ? '<' : '>';
+      return { column: column.name, operator, value: Number(directional[1]) };
+    }
+    if (/\bage\b/i.test(column.name)) {
+      const agePhrase = /\b(?:above|over|older than|greater than|at least)\s+(-?(?:\d+\.?\d*|\.\d+))(?:\s+years?\s+old)?\b/i.exec(request);
+      if (agePhrase) return { column: column.name, operator: /at least/i.test(agePhrase[0]) ? '>=' : '>', value: Number(agePhrase[1]) };
+    }
+    const yearsName = column.name.replace(/[_ ]years?$/i, '').replace(/_/g, ' ');
+    if (yearsName !== column.name) {
+      const experiencePhrase = new RegExp(`\\b(?:above|over|greater than|more than|at least)\\s+(-?(?:\\d+\\.?\\d*|\\.\\d+))\\s+years?\\s+(?:of\\s+)?${yearsName}\\b`, 'i').exec(request);
+      if (experiencePhrase) return { column: column.name, operator: /at least/i.test(experiencePhrase[0]) ? '>=' : '>', value: Number(experiencePhrase[1]) };
+      const directExperiencePhrase = new RegExp(`\\b${yearsName}\\s+(?:is\\s+)?(?:above|over|greater than|more than|at least)\\s+(-?(?:\\d+\\.?\\d*|\\.\\d+))`, 'i').exec(request);
+      if (directExperiencePhrase) return { column: column.name, operator: /at least/i.test(directExperiencePhrase[0]) ? '>=' : '>', value: Number(directExperiencePhrase[1]) };
+    }
+  }
+
+  if (column.type !== 'number') {
+    const phrase = new RegExp(`\\bin the\\s+(.+?)\\s+${columnPattern}(?=\\s+(?:who|with|and|that|where)\\b|[?,;]|$)`, 'i').exec(request);
+    if (phrase) return { column: column.name, operator: '=', value: cleanTextValue(phrase[1]) };
+    const values = [...new Set((records ?? []).map((record) => record[column.name]).filter((value) => typeof value === 'string' && value.trim() !== ''))]
+      .sort((left, right) => right.length - left.length);
+    const mentionedValue = values.find((value) => new RegExp(`(?<![A-Za-z0-9_])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`, 'i').test(request));
+    if (mentionedValue) return { column: column.name, operator: '=', value: mentionedValue };
+  }
+  return null;
+}
+
+function filterArguments(request, columns, records) {
+  const conditions = columns.map((column) => conditionForColumn(request, column, records)).filter(Boolean);
+  if (!conditions.length) throw new AppError('Could not determine the filter condition from the request', 422);
+  return { conditions };
+}
+
+export function inferToolParameters(tool, request, metadata, records = []) {
   const columns = metadata.columns;
   const numericColumns = columns.filter((column) => column.type === 'number');
   const dateColumns = columns.filter((column) => column.type === 'date');
   if (tool === 'datasetSummary') return {};
-  if (tool === 'filterData') return filterArguments(request, columns);
+  if (tool === 'filterData') return filterArguments(request, columns, records);
   if (tool === 'aggregateData') {
     const operation = operationFromRequest(request, ['sum', 'average', 'min', 'max', 'count'], 'average');
-    return { operation, column: operation === 'count' ? undefined : firstColumn(request, numericColumns, () => true) };
+    return { operation, column: operation === 'count' ? undefined : aggregationColumn(request, numericColumns, operation) };
   }
   if (tool === 'correlationAnalysis') {
     const matches = mentionedColumns(request, numericColumns);
     if (matches.length < 2) throw new AppError('Correlation requires two referenced numeric columns', 422);
     return { column_x: matches[0].name, column_y: matches[1].name };
+  }
+  if (tool === 'groupByAnalysis') {
+    const categoricalColumns = columns.filter((column) => column.type !== 'number' && column.type !== 'date');
+    const byMatch = mentionedColumns(request, categoricalColumns).find((column) => {
+      const aliases = [column.name, column.name.replace(/_/g, ' ')].map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      return aliases.some((alias) => new RegExp(`\\bby\\s+(?:the\\s+)?${alias}\\b`, 'i').test(request));
+    });
+    const groupBy = byMatch?.name ?? firstColumn(request, categoricalColumns, () => true);
+    const operation = operationFromRequest(request, ['count', 'sum', 'average', 'min', 'max'], 'average');
+    const numericColumns = columns.filter((column) => column.type === 'number');
+    return { group_by: groupBy, operation, column: operation === 'count' ? undefined : aggregationColumn(request, numericColumns, operation) };
   }
   if (tool === 'timeSeriesAnalysis') {
     const dateColumn = mentionedColumns(request, dateColumns)[0]?.name ?? dateColumns[0]?.name;

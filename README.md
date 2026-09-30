@@ -4,7 +4,9 @@
 
 ## Architecture
 
-`server.js` exposes `/health` and `/analyze`. The analyze route parses an uploaded CSV in memory, validates the request, and passes records plus the question to `agentService`. `agentService` sends only the user request and dataset metadata to JEV System One for a typed tool choice. `toolRegistry.js` validates that choice, resolves deterministic parameters, and dispatches only to approved JavaScript tools.
+`server.js` exposes `/health` and `/analyze`. The analyze route parses an uploaded CSV in memory, validates the request, and passes records plus the question to `agentService`. `agentService` sends only the user request and dataset metadata to JEV System One for ordered typed tool choices. `toolRegistry.js` validates the plan, resolves deterministic parameters, and dispatches only to approved JavaScript tools.
+
+JEV answers `step_1` through `step_8` Choice questions so a plan can represent longer workflows. A later `review` choice means there are no more steps. The application normalizes those answers to `{ plan: [{ tool, parameters? }] }`. Plans may also contain validated deterministic result operations such as `select_group` and `lookup_row`. Filtered rows become the input records for the next dataset tool; grouped and scalar results cannot be silently treated as raw rows. No generated code is executed.
 
 The tool registry is the extension point for future analysis tools. Each tool owns its declaration and execution function, so adding a tool later means adding its module and registering it in the registry without changing the agent loop.
 
@@ -14,7 +16,7 @@ The tool registry is the extension point for future analysis tools. Each tool ow
 
 `aggregate_data` performs `sum`, `average`/`mean`, `min`, `max`, and record `count`. Numeric operations validate the requested column, ignore missing or invalid numeric values, and return the number of valid values used. The calculation is always performed by JavaScript.
 
-The other active tools are `filter_data` for validated AND-combined row conditions, `group_by_analysis` for deterministic grouped aggregations, `correlation_analysis` for Pearson correlation, and `time_series_analysis` for daily or monthly date-bucket aggregations. Invalid values are handled by the tools, and no tool executes generated code.
+The other active tools are `filter_data` for validated AND/OR-combined row conditions, `group_by_analysis` for deterministic grouped aggregations, `correlation_analysis` for Pearson correlation, and `time_series_analysis` for daily or monthly date-bucket aggregations. Invalid values are handled by the tools, and no tool executes generated code.
 
 JavaScript performs the calculations because the dataset stays in the application and deterministic code is safer and more reproducible than executing generated code. JEV selects a tool only; it never receives the full dataset and never calculates the result. Gemini is disabled in the current request flow and its previous integration is retained as commented code in `agentService.js`.
 

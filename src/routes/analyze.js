@@ -18,6 +18,7 @@ export function createAnalyzeRouter(agentService) {
         answer: result.answer,
         result: result.result,
         tools_used: result.toolsUsed,
+        execution_trace: result.executionTrace,
       });
     } catch (error) {
       next(error);
