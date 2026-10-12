@@ -32,6 +32,14 @@ function answerFromToolResult(result, question = '') {
       const related = relatedKey ? ` and a ${relatedLabel} of ${row[relatedKey]}` : '';
       return `${employee} has the ${direction} ${result.column} value of ${result.value}${related}.`;
     }
+    if (result.operation === 'max_group' || result.operation === 'min_group') {
+      const direction = result.operation === 'max_group' ? 'highest' : 'lowest';
+      const aggregation = result.aggregation_operation ?? 'aggregated';
+      return `${result.group} has the ${direction} ${aggregation} ${result.column} of ${result.value}.`;
+    }
+    if (result.operation === 'multi_aggregate') {
+      return result.results.map((item) => `The ${item.operation} of ${item.column} is ${item.value}.`).join(' ');
+    }
     if (result.column) return `The ${result.operation} of ${result.column} is ${result.value}.`;
   }
   if (Object.prototype.hasOwnProperty.call(result, 'matched_rows')) return `The filter matched ${result.matched_rows} of ${result.total_rows} rows.`;

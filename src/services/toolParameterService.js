@@ -38,7 +38,7 @@ function operationFromRequest(request, allowed, fallback) {
   return fallback;
 }
 
-function aggregationColumn(request, columns, operation) {
+function aggregationColumn(request, columns, operation, excludedColumns = []) {
   const operationWords = {
     sum: 'total|sum',
     average: 'average|avg|mean',
@@ -54,10 +54,11 @@ function aggregationColumn(request, columns, operation) {
           return new RegExp(`\\b(?:${operationWords})\\b(?:\\s+of)?\\s+(?:the\\s+)?${escaped}(?![A-Za-z0-9_])`, 'i').test(request);
         }) ? column : null;
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((column) => !excludedColumns.includes(column.name));
     if (matches.length) return matches[0].name;
   }
-  return firstColumn(request, columns, () => true);
+  return firstColumn(request, columns, (column) => !excludedColumns.includes(column.name));
 }
 
 function parseFilterValue(value) {
@@ -116,7 +117,7 @@ function filterArguments(request, columns, records) {
   return { conditions };
 }
 
-export function inferToolParameters(tool, request, metadata, records = []) {
+export function inferToolParameters(tool, request, metadata, records = [], options = {}) {
   const columns = metadata.columns;
   const numericColumns = columns.filter((column) => column.type === 'number');
   const dateColumns = columns.filter((column) => column.type === 'date');
@@ -124,7 +125,7 @@ export function inferToolParameters(tool, request, metadata, records = []) {
   if (tool === 'filterData') return filterArguments(request, columns, records);
   if (tool === 'aggregateData') {
     const operation = operationFromRequest(request, ['sum', 'average', 'min', 'max', 'count'], 'average');
-    return { operation, column: operation === 'count' ? undefined : aggregationColumn(request, numericColumns, operation) };
+    return { operation, column: operation === 'count' ? undefined : aggregationColumn(request, numericColumns, operation, options.excludeColumns ?? []) };
   }
   if (tool === 'correlationAnalysis') {
     const matches = mentionedColumns(request, numericColumns);

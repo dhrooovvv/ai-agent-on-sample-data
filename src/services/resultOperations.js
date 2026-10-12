@@ -1,14 +1,8 @@
 import { AppError } from '../utils/errors.js';
+import { resultTypeOf } from './executionTypes.js';
 
 export function resultKind(result) {
-  if (Array.isArray(result)) return 'dataset';
-  if (!result || typeof result !== 'object') return 'unknown';
-  if (Array.isArray(result.groups)) return 'grouped_result';
-  if (Array.isArray(result.rows)) return 'dataset_result';
-  if (result.row && typeof result.row === 'object') return 'row_result';
-  if (typeof result.value === 'number' && typeof result.operation === 'string') return 'scalar_result';
-  if (Array.isArray(result.series)) return 'series_result';
-  return 'analysis_result';
+  return resultTypeOf(result);
 }
 
 function selectionDirection(selection) {
@@ -29,6 +23,8 @@ export function selectGroup(groupedResult, { selection = 'max' } = {}) {
   return {
     operation: direction === 'max' ? 'max_group' : 'min_group',
     group_by: groupedResult.group_by,
+    column: groupedResult.column,
+    aggregation_operation: groupedResult.operation,
     group: selected.group,
     value: selected.value,
     count: selected.count,
