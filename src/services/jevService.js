@@ -46,8 +46,18 @@ export function createJevService({
     }
   }
 
-  function criteriaFor(availableTools) {
-    return Object.fromEntries(availableTools.map(({ name, description }) => [name, description]));
+  function summaryOnlyRequest(userRequest) {
+    const text = String(userRequest).toLowerCase();
+    const asksSummary = /\b(summary|overview|rows? and columns?|columns? present|missing values?|unique values?|descriptive statistics?)\b/.test(text);
+    const asksAnalysis = /\b(average|avg|mean|sum|total|minimum|maximum|min|max|highest|lowest|filter|correlation|trend|group|salary|revenue|temperature|age|experience)\b/.test(text);
+    return asksSummary && !asksAnalysis;
+  }
+
+  function criteriaFor(availableTools, userRequest) {
+    const tools = summaryOnlyRequest(userRequest)
+      ? availableTools
+      : availableTools.filter(({ name }) => name !== 'datasetSummary');
+    return Object.fromEntries(tools.map(({ name, description }) => [name, description]));
   }
 
   function readPlan(body) {
@@ -78,7 +88,7 @@ export function createJevService({
 
   return {
     async choosePlan({ userRequest, dataset, availableTools }) {
-      const criteria = criteriaFor(availableTools);
+      const criteria = criteriaFor(availableTools, userRequest);
       const questions = {};
       for (let index = 1; index <= 8; index += 1) {
         questions[`step_${index}`] = {
@@ -96,7 +106,7 @@ export function createJevService({
         tool: {
           type: 'choice',
           instructions: 'Choose exactly one available analysis tool for the user request. Choose review when the request is unsupported.',
-          criteria: criteriaFor(availableTools),
+          criteria: criteriaFor(availableTools, userRequest),
         },
       } });
       const choice = body?.answers?.tool?.choice;
