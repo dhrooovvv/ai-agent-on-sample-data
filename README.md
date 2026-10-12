@@ -24,7 +24,20 @@ CSV upload
   -> concise natural-language answer
 ```
 
-The executor preserves the output of each step. For example, a filtered dataset is passed to an aggregate tool, while a grouped result must first pass through `select_group` before another dataset calculation can run. Incomplete plans are rejected instead of returning an intermediate result as the final answer.
+The executor preserves the output of each step while keeping the original/current rows separate from the last result. For example, a filtered dataset is passed to an aggregate tool, while a grouped result must first pass through `select_group` before another dataset calculation can run. Incomplete or type-incompatible plans are rejected before any tool executes.
+
+The execution model recognizes these result types:
+
+- `dataset`
+- `dataset_result`
+- `scalar_result`
+- `grouped_result`
+- `selected_group_result`
+- `row_result`
+- `summary_result`
+- `error`
+
+`dataset_summary` produces `summary_result` and is terminal. `aggregate_data` produces `scalar_result`; it can feed `lookup_row`, or another aggregate can explicitly reuse the preserved current rows for multiple requested metrics. Grouped results can feed `select_group`. A scalar or summary result cannot be passed to an arbitrary dataset tool.
 
 ## Current tool
 
@@ -80,44 +93,18 @@ curl -X POST http://localhost:3000/analyze \
   -F "question=How many rows and columns are in this dataset?"
 ```
 
-The response has this shape:
+Successful `/analyze` responses intentionally contain only the answer and the tools used:
 
 ```json
 {
-  "success": true,
-  "question": "What is the average salary of Engineering employees over 30?",
   "answer": "The average of salary is 85000.",
-  "result": {
-    "operation": "average",
-    "column": "salary",
-    "value": 85000,
-    "valid_values": 1
-  },
   "tools_used": ["filter_data", "aggregate_data"],
-  "execution_trace": [
-    {
-      "step": 1,
-      "kind": "tool",
-      "name": "filter_data",
-      "inputType": "dataset",
-      "outputType": "dataset_result",
-      "inputRows": 10
-    },
-    {
-      "step": 2,
-      "kind": "tool",
-      "name": "aggregate_data",
-      "inputType": "dataset",
-      "outputType": "scalar_result",
-      "inputRows": 1
-    }
-  ]
 }
 ```
 
-`result` contains deterministic values returned by JavaScript. `tools_used` lists the analysis tools executed, while `execution_trace` records the ordered execution and result types without returning the dataset rows.
+Deterministic results and execution traces remain internal to the agent and are not exposed by the API response. `tools_used` lists the analysis tools executed in order.
 
-Unsupported requests, invalid plans, missing columns, unavailable tools, and provider failures return a structured error response. Regression analysis is not implemented in the current checkout and is rejected explicitly rather than producing a fabricated result.
+Multiple requested metrics return a `multi_aggregate` result containing each deterministic aggregation. Unsupported requests, invalid plans, missing columns, unavailable tools, and provider failures return a structured error response such as `{ "success": false, "error": "..." }`. Regression analysis is not implemented in the current checkout and is rejected explicitly rather than producing a fabricated result.
 
 ## Tests
 
@@ -125,4 +112,4 @@ Unsupported requests, invalid plans, missing columns, unavailable tools, and pro
 npm test
 ```
 
-Tests cover dynamic summary calculations, aggregate operations and validation, multiple AND/OR filters, grouped selection, row lookup after aggregation, multi-step data flow, incomplete-plan rejection, JEV request/decision validation, the 15-row/9-column sample, natural-language tool selection, and the multipart API contract. Provider tests inject a fetch boundary so they do not require a live Codiv key.
+Tests cover dynamic summary calculations, aggregate operations and validation, multiple AND/OR filters, grouped selection, row lookup after aggregation, multiple aggregate metrics over preserved rows, valid result transitions, invalid summary/scalar transitions, incomplete-plan rejection, JEV request/decision validation, the 15-row/9-column sample, natural-language tool selection, and the multipart API contract. Provider tests inject a fetch boundary so they do not require a live Codiv key.

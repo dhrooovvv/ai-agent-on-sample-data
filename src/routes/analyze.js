@@ -13,12 +13,8 @@ export function createAnalyzeRouter(agentService) {
       const records = parseCsvBuffer(request.file?.buffer);
       const result = await agentService.analyze({ question, records });
       response.json({
-        success: true,
-        question,
         answer: result.answer,
-        result: result.result,
         tools_used: result.toolsUsed,
-        execution_trace: result.executionTrace,
       });
     } catch (error) {
       next(error);

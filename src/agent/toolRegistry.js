@@ -10,6 +10,7 @@ import { inferToolParameters } from '../services/toolParameterService.js';
 import { questionRequestsRow } from '../services/rowLookupService.js';
 import { questionRequestsGroupedPerformance, rowsForGroup } from '../services/groupFollowUpService.js';
 import { lookupRow, resultKind, selectGroup } from '../services/resultOperations.js';
+import { RESULT_TYPES, resultTypeOf, validatePlanTransitions } from '../services/executionTypes.js';
 
 const activeTools = [
   datasetSummaryTool,
@@ -60,26 +61,31 @@ export async function dispatchToolSelection(decision, { records, question, metad
 
 export async function dispatchToolPlan(decision, { records, question, metadata }) {
   const validated = normalizeToolPlan(decision);
-  const plan = validated.plan;
+  const plan = completeResultOperations(validated.plan, question);
 
   validateExplicitColumns(plan, records);
+  validatePlanTransitions(plan);
   validatePlanCompleteness(plan, question, metadata, records);
 
-  let workingRecords = records;
-  let inputRecords = records;
-  let latestResult;
+  const context = {
+    originalRows: records,
+    currentRows: records,
+    lastResult: undefined,
+    resultType: RESULT_TYPES.DATASET,
+  };
   const toolsUsed = [];
   const executionTrace = [];
+  const aggregateResults = [];
   let selectedGroupContext;
 
   for (let stepIndex = 0; stepIndex < plan.length; stepIndex += 1) {
     const step = plan[stepIndex];
-    const nextStep = plan[stepIndex + 1];
     if (step.operation) {
       if (step.operation === 'select_group') {
-        const groupedSource = latestResult;
+        const groupedSource = context.lastResult;
         const selectedGroup = selectGroup(groupedSource, step.parameters);
-        latestResult = selectedGroup;
+        context.lastResult = selectedGroup;
+        context.resultType = resultTypeOf(selectedGroup);
         selectedGroupContext = {
           result: groupedSource,
           selected: {
@@ -87,23 +93,22 @@ export async function dispatchToolPlan(decision, { records, question, metadata }
             value: selectedGroup.value,
             count: selectedGroup.count,
             column: groupedSource.column,
+            aggregation_operation: groupedSource.operation,
             operation: selectedGroup.operation,
           },
         };
-        const sourceRecords = executionTrace.at(-1)?.inputRecords;
-        if (!Array.isArray(sourceRecords)) throw new AppError('select_group lost its source dataset', 422);
-        workingRecords = rowsForGroup(sourceRecords, latestResult.group_by, latestResult.group);
+        context.currentRows = rowsForGroup(context.currentRows, selectedGroup.group_by, selectedGroup.group);
       } else if (step.operation === 'lookup_row') {
-        latestResult = lookupRow(workingRecords, latestResult, step.parameters);
+        context.lastResult = lookupRow(context.currentRows, context.lastResult, step.parameters);
+        context.resultType = resultTypeOf(context.lastResult);
       }
       executionTrace.push({
         step: executionTrace.length + 1,
         kind: 'result_operation',
         name: step.operation,
-        inputType: executionTrace.at(-1)?.outputType ?? resultKind(latestResult),
-        outputType: resultKind(latestResult),
-        inputRecords: workingRecords,
-        inputRows: Array.isArray(workingRecords) ? workingRecords.length : undefined,
+        inputType: executionTrace.at(-1)?.outputType ?? context.resultType,
+        outputType: context.resultType,
+        inputRows: context.currentRows.length,
       });
       continue;
     }
@@ -113,31 +118,55 @@ export async function dispatchToolPlan(decision, { records, question, metadata }
     }
     const tool = selectionMap.get(step.tool);
     if (!tool) throw new AppError(`${step.tool} is not implemented in this checkout`, 501);
-    let inferred = step.parameters ?? inferToolParameters(step.tool, question, metadata, workingRecords);
+    const excludedAggregateColumns = step.tool === 'aggregateData'
+      ? [
+        ...aggregateResults.map((result) => result.column),
+        selectedGroupContext?.selected.column,
+      ].filter(Boolean)
+      : [];
+    let inferred = step.parameters ?? inferToolParameters(
+      step.tool,
+      question,
+      metadata,
+      context.currentRows,
+      { excludeColumns: excludedAggregateColumns },
+    );
     const parameters = validateToolParameters(step.tool, inferred);
-    inputRecords = workingRecords;
-    latestResult = await tool.execute({ records: workingRecords, ...parameters });
+    const inputRecords = context.currentRows;
+    context.lastResult = await tool.execute({ records: inputRecords, ...parameters });
+    context.resultType = resultTypeOf(context.lastResult);
+    if (step.tool === 'aggregateData') aggregateResults.push(context.lastResult);
     toolsUsed.push(tool.name);
     executionTrace.push({
       step: executionTrace.length + 1,
       kind: 'tool',
       name: tool.name,
       inputType: Array.isArray(inputRecords) ? 'dataset' : resultKind(inputRecords),
-      outputType: resultKind(latestResult),
+      outputType: context.resultType,
       inputRecords,
       inputRows: inputRecords.length,
     });
-    if (nextStep) {
-      if (nextStep.operation === 'select_group' || nextStep.operation === 'lookup_row') continue;
-      if (!Array.isArray(latestResult?.rows)) throw new AppError(`Tool ${tool.name} did not return rows for the next plan step`, 422);
-      workingRecords = latestResult.rows;
+    if (context.resultType === RESULT_TYPES.DATASET_RESULT) {
+      context.currentRows = context.lastResult.rows;
     }
   }
+  let latestResult = context.lastResult;
   if (selectedGroupContext) {
+    if (context.resultType === RESULT_TYPES.SELECTED_GROUP_RESULT) {
+      latestResult = {
+        operation: selectedGroupContext.selected.operation,
+        group_by: selectedGroupContext.result.group_by,
+        group: selectedGroupContext.selected.group,
+        column: selectedGroupContext.selected.column,
+        aggregation_operation: selectedGroupContext.selected.aggregation_operation,
+        value: selectedGroupContext.selected.value,
+        count: selectedGroupContext.selected.count,
+      };
+    } else {
     let followUp = latestResult;
     if (latestResult === selectedGroupContext.result) {
-      const followUpParameters = inferToolParameters('aggregateData', 'average performance score', metadata, workingRecords);
-      followUp = await aggregateDataTool.execute({ records: workingRecords, ...followUpParameters });
+      const followUpParameters = inferToolParameters('aggregateData', 'average performance score', metadata, context.currentRows);
+      followUp = await aggregateDataTool.execute({ records: context.currentRows, ...followUpParameters });
       toolsUsed.push(aggregateDataTool.name);
     }
     latestResult = {
@@ -147,6 +176,10 @@ export async function dispatchToolPlan(decision, { records, question, metadata }
       primary: selectedGroupContext.selected,
       follow_up: followUp,
     };
+    }
+  }
+  if (aggregateResults.length > 1 && context.resultType === RESULT_TYPES.SCALAR_RESULT) {
+    latestResult = { operation: 'multi_aggregate', results: aggregateResults };
   }
   assertCompleteResult(question, latestResult);
   return {
@@ -154,6 +187,49 @@ export async function dispatchToolPlan(decision, { records, question, metadata }
     result: latestResult,
     executionTrace: executionTrace.map(({ inputRecords, ...trace }) => trace),
   };
+}
+
+function questionRequestsGroupSelection(question) {
+  const text = String(question).toLowerCase();
+  return /\b(highest|lowest|top|bottom|maximum|minimum)\b/.test(text)
+    && /\b(by|per|group|department|region|category|team)\b/.test(text);
+}
+
+function completeResultOperations(plan, question) {
+  let completed = [...plan];
+  const rowRequest = questionRequestsRow(question, { operation: 'max' })
+    && /\b(maximum|max|highest|minimum|min|lowest)\b/i.test(question)
+    && !questionRequestsGroupSelection(question);
+  if (rowRequest) {
+    const aggregateIndex = completed.findIndex((step) => step.tool === 'aggregateData');
+    if (aggregateIndex >= 0) {
+      // A requested related metric belongs to the matching row, not to a
+      // second scalar aggregation that would lose the max-column identity.
+      completed = completed.filter((step, index) => step.tool !== 'aggregateData' || index === aggregateIndex);
+      if (!completed.some((step) => step.operation === 'lookup_row')) {
+        completed.push({ operation: 'lookup_row', parameters: { selection: /\b(minimum|min|lowest)\b/i.test(question) ? 'min' : 'max' } });
+      }
+    }
+  }
+
+  if (questionRequestsGroupSelection(question)) {
+    const groupIndex = completed.findIndex((step) => step.tool === 'groupByAnalysis');
+    if (groupIndex >= 0) {
+      const next = completed[groupIndex + 1];
+      if (next?.tool === 'groupByAnalysis') completed[groupIndex + 1] = { operation: 'select_group', parameters: { selection: /\b(lowest|minimum|bottom)\b/i.test(question) ? 'min' : 'max' } };
+      if (!completed.some((step) => step.operation === 'select_group')) {
+        completed.splice(groupIndex + 1, 0, { operation: 'select_group', parameters: { selection: /\b(lowest|minimum|bottom)\b/i.test(question) ? 'min' : 'max' } });
+      }
+      if (questionRequestsGroupedPerformance(question)) {
+        const selectIndex = completed.findIndex((step) => step.operation === 'select_group');
+        if (!completed.some((step, index) => step.tool === 'aggregateData' && index > selectIndex)) {
+          completed.push({ tool: 'aggregateData' });
+        }
+      }
+    }
+  }
+  if (completed.length > 8) throw new AppError('Execution plan exceeds the supported step limit', 422);
+  return completed;
 }
 
 function validatePlanCompleteness(plan, question, metadata, records) {
@@ -212,12 +288,6 @@ function validateExplicitColumns(plan, records) {
     }
     if (step.operation === 'lookup_row' && previous?.tool !== 'aggregateData') {
       throw new AppError('lookup_row must consume a scalar aggregate result', 422);
-    }
-    if (next && step.tool === 'aggregateData' && next.operation !== 'lookup_row') {
-      throw new AppError('A scalar aggregate result can only feed lookup_row', 422);
-    }
-    if (next && step.tool === 'groupByAnalysis' && next.operation !== 'select_group') {
-      throw new AppError('A grouped result must be selected before another dataset tool runs', 422);
     }
     if (next && step.operation === 'lookup_row') {
       throw new AppError('lookup_row must be the final result operation', 422);

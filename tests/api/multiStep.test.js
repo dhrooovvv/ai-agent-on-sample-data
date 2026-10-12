@@ -33,7 +33,41 @@ describe('multi-step JEV plans', () => {
     });
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['aggregate_data']);
-    expect(response.body.result).toMatchObject({ operation: 'average', column: 'salary', valid_values: 10 });
+    expect(Object.keys(response.body).sort()).toEqual(['answer', 'tools_used']);
+  });
+
+  it('keeps dataset_summary terminal', async () => {
+    const response = await analyze('Give me a summary of this dataset.', {
+      plan: [{ tool: 'datasetSummary' }],
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.tools_used).toEqual(['dataset_summary']);
+    expect(Object.keys(response.body).sort()).toEqual(['answer', 'tools_used']);
+  });
+
+  it('rejects dataset_summary followed by a row-requiring tool before execution', async () => {
+    const response = await analyze('Summarize and then calculate the average salary.', {
+      plan: [{ tool: 'datasetSummary' }, { tool: 'filterData' }],
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error).toMatch(/summary_result cannot feed filterData/);
+  });
+
+  it('rejects scalar aggregate results followed by grouped analysis', async () => {
+    const response = await analyze('Calculate the average salary and then group by department.', {
+      plan: [{ tool: 'aggregateData' }, { tool: 'groupByAnalysis' }],
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatch(/scalar_result cannot feed groupByAnalysis/);
+  });
+
+  it('rejects scalar aggregate results followed by filtering', async () => {
+    const response = await analyze('Calculate the average salary and then filter by age.', {
+      plan: [{ tool: 'aggregateData' }, { tool: 'filterData' }],
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatch(/scalar_result cannot feed filterData/);
   });
 
   it('feeds Engineering employees over 30 into average salary', async () => {
@@ -45,7 +79,19 @@ describe('multi-step JEV plans', () => {
     });
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data', 'aggregate_data']);
-    expect(response.body.result).toMatchObject({ operation: 'average', column: 'salary', value: 85000, valid_values: 1 });
+    expect(response.body.answer).toContain('average of salary');
+  });
+
+  it('preserves filtered rows for multiple aggregate metrics', async () => {
+    const response = await analyzeFile(
+      largeEmployeesPath,
+      'For Engineering employees over 30, calculate the average salary and average performance score.',
+      { plan: [{ tool: 'filterData' }, { tool: 'aggregateData' }, { tool: 'aggregateData' }] },
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.tools_used).toEqual(['filter_data', 'aggregate_data', 'aggregate_data']);
+    expect(response.body.answer).toContain('average of salary');
+    expect(response.body.answer).toContain('average of performance_score');
   });
 
   it('rejects an under-planned aggregate decision when the request contains filters', async () => {
@@ -65,7 +111,7 @@ describe('multi-step JEV plans', () => {
     });
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data', 'aggregate_data']);
-    expect(response.body.result).toMatchObject({ operation: 'average', column: 'performance_score', value: 91, valid_values: 2 });
+    expect(response.body.answer).toContain('average of performance_score');
   });
 
   it('rejects an unsupported review plan without executing a tool', async () => {
@@ -87,19 +133,6 @@ describe('multi-step JEV plans', () => {
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data', 'aggregate_data']);
     expect(response.body.answer).toBe('Nisha Kapoor 170 has the highest salary value of 111290 and a performance score of 80.');
-    expect(response.body.result).toEqual({
-      operation: 'max_row',
-      column: 'salary',
-      value: 111290,
-      row: {
-        employee: 'Nisha Kapoor 170',
-        department: 'Engineering',
-        age: 31,
-        salary: 111290,
-        experience_years: 10,
-        performance_score: 80,
-      },
-    });
   });
 
   it('parses multiple natural-language filters before grouped analysis', async () => {
@@ -115,12 +148,7 @@ describe('multi-step JEV plans', () => {
     );
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data', 'group_by_analysis', 'aggregate_data']);
-    expect(response.body.result).toMatchObject({
-      operation: 'group_max_follow_up',
-      group_by: 'department',
-      group: 'Product',
-      follow_up: { operation: 'average', column: 'performance_score', value: 81.1, valid_values: 20 },
-    });
+    expect(response.body.answer).toContain('Product has the highest average');
   });
 
   it('executes explicit grouped selection and follow-up aggregation without losing rows', async () => {
@@ -138,14 +166,22 @@ describe('multi-step JEV plans', () => {
     );
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['filter_data', 'group_by_analysis', 'aggregate_data']);
-    expect(response.body.execution_trace.map((step) => step.name)).toEqual([
-      'filter_data', 'group_by_analysis', 'select_group', 'aggregate_data',
-    ]);
-    expect(response.body.result).toMatchObject({
-      operation: 'group_max_follow_up',
-      group_by: 'department',
-      follow_up: { operation: 'average', column: 'performance_score' },
-    });
+    expect(response.body.answer).toContain('average performance_score');
+  });
+
+  it('returns the selected group when group comparison is terminal', async () => {
+    const response = await analyzeFile(
+      largeEmployeesPath,
+      'Among employees over 30 with more than 5 years of experience, find the department with the highest average salary.',
+      { plan: [
+        { tool: 'filterData' },
+        { tool: 'groupByAnalysis' },
+        { operation: 'select_group', parameters: { selection: 'max' } },
+      ] },
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.tools_used).toEqual(['filter_data', 'group_by_analysis']);
+    expect(response.body.answer).toMatch(/Product has the highest average salary/);
   });
 
   it('executes explicit row lookup after a maximum aggregate', async () => {
@@ -161,8 +197,7 @@ describe('multi-step JEV plans', () => {
     );
     expect(response.status).toBe(200);
     expect(response.body.tools_used).toEqual(['aggregate_data']);
-    expect(response.body.execution_trace.map((step) => step.name)).toEqual(['aggregate_data', 'lookup_row']);
-    expect(response.body.result).toMatchObject({ operation: 'max_row', column: 'salary', value: 121956 });
+    expect(response.body.answer).toContain('highest salary');
   });
 
   it('rejects a plan that ends at an intermediate filtered result', async () => {
@@ -173,13 +208,14 @@ describe('multi-step JEV plans', () => {
     expect(response.body.error).toMatch(/aggregation was completed/);
   });
 
-  it('rejects a grouped intermediate result when the question asks for the top group metric', async () => {
+  it('completes grouped selection and follow-up metric planning', async () => {
     const response = await analyzeFile(
       largeEmployeesPath,
       'find the department with the highest average salary and report its average performance score',
       { plan: [{ tool: 'groupByAnalysis' }] },
     );
-    expect(response.status).toBe(422);
-    expect(response.body.error).toMatch(/filterData is required|select_group is required/);
+    expect(response.status).toBe(200);
+    expect(response.body.tools_used).toEqual(['group_by_analysis', 'aggregate_data']);
+    expect(response.body.answer).toContain('highest average');
   });
 });

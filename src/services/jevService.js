@@ -14,7 +14,17 @@ export function createJevService({
     if (!apiKey) throw new AppError('TYPESAFE_API_KEY is not configured', 500);
     const payload = {
       model,
-      state: { userRequest, dataset, availableTools },
+      state: {
+        userRequest,
+        dataset,
+        availableTools,
+        planningRules: {
+          datasetSummary: 'Terminal only. Never place datasetSummary before filterData, aggregateData, groupByAnalysis, correlationAnalysis, or timeSeriesAnalysis.',
+          rowFlow: 'filterData produces rows for later tools. aggregateData produces a scalar and may only be followed by lookup_row or another aggregateData that reads the preserved current rows.',
+          groupFlow: 'groupByAnalysis produces groups and must be followed by select_group when the question asks for highest, lowest, top, or bottom group.',
+          completion: 'Represent every requested operation before review. Do not stop at an intermediate result.',
+        },
+      },
       questions,
     };
 
@@ -74,8 +84,8 @@ export function createJevService({
         questions[`step_${index}`] = {
           type: 'choice',
           instructions: index === 1
-            ? 'Choose the first step in a complete execution plan. Include filterData for every row constraint before analysis. Do not stop at an intermediate operation.'
-            : 'Choose the next step in the complete plan. Preserve every prior filter, and include grouping, aggregation, comparison, or row lookup stages needed to answer every part of the request. Choose review only for unsupported requests or after the complete plan is represented.',
+            ? 'Choose the first step in a complete execution plan. Use datasetSummary only when the request is solely a summary. Include filterData for every row constraint before analysis. Do not stop at an intermediate operation.'
+            : 'Choose the next step in the complete plan. Never follow datasetSummary with another tool. Preserve every filter, include repeated aggregateData steps for multiple requested metrics, include select_group for group comparisons, and include lookup_row for requested row details. Choose review only for unsupported requests or after the complete plan is represented.',
           criteria,
         };
       }
