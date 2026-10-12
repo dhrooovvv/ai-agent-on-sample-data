@@ -197,6 +197,15 @@ function questionRequestsGroupSelection(question) {
 
 function completeResultOperations(plan, question) {
   let completed = [...plan];
+  const requestedAggregationCount = (String(question).match(/\b(sum|total|average|avg|mean|maximum|max|highest|minimum|min|lowest|count)\b/gi) ?? []).length;
+  if (!questionRequestsGroupSelection(question)) {
+    let aggregateSeen = 0;
+    completed = completed.filter((step) => {
+      if (step.tool !== 'aggregateData') return true;
+      aggregateSeen += 1;
+      return aggregateSeen <= Math.max(1, requestedAggregationCount);
+    });
+  }
   const rowRequest = questionRequestsRow(question, { operation: 'max' })
     && /\b(maximum|max|highest|minimum|min|lowest)\b/i.test(question)
     && !questionRequestsGroupSelection(question);
